@@ -67,6 +67,7 @@ struct thread_info {
     int liveclients;
     int numrequests;
     int donerequests;
+    int *latency;
 };
 
 static struct config {
@@ -84,7 +85,6 @@ static struct config {
     int keepalive;
     long long start;
     long long totlatency;
-    int *latency;
     char *title;
     int quiet;
     int loop;
@@ -110,16 +110,6 @@ typedef struct _client {
 /* Prototypes */
 static void writeHandler(aeEventLoop *el, int fd, void *privdata, int mask);
 static void createMissingClients(client c);
-
-int32_t atomic_inc(volatile int* operand, int incr) {
-    int32_t result;
-    asm __volatile__(
-            "lock xaddl %0,%1\n"
-            : "=r"(result), "=m"(*(int *)operand)
-            : "0"(incr)
-            : "memory");
-    return result;
-}
 
 /* Implementation */
 static long long mstime(void) {
@@ -147,19 +137,6 @@ static void freeClient(client c) {
     ln = listSearchKey(t_info->clients,c);
     assert(ln != NULL);
     listDelNode(t_info->clients,ln);
-}
-
-static void freeAllClients(void) {
-    int i;
-
-    for (i = 0; i < config.numthreads; i++) {
-        listNode *ln = config.threads[i].clients->head, *next;
-        while(ln) {
-            next = ln->next;
-            freeClient(ln->value);
-            ln = next;
-        }
-    }
 }
 
 static void resetClient(client c) {
@@ -205,7 +182,6 @@ static void prepareClientForReply(client c, int type) {
 
 static void clientDone(client c) {
     long long latency;
-    static int last_tot_received = 1;
     struct thread_info *t_info;
 
     t_info = &config.threads[c->owner];
@@ -213,12 +189,8 @@ static void clientDone(client c) {
     t_info->donerequests ++;
     latency = mstime() - c->start;
     if (latency > MAX_LATENCY) latency = MAX_LATENCY;
-    config.latency[latency] = atomic_inc(&config.latency[latency], 1);
-    if (config.debug && last_tot_received != c->totreceived) {
-        printf("Tot bytes received: %d\n", c->totreceived);
-        last_tot_received = c->totreceived;
-    }
-    if (t_info->donerequests == t_info->numrequests) {
+    t_info->latency[latency]++ ;
+    if (t_info->donerequests >= t_info->numrequests) {
         freeClient(c);
         aeStop(t_info->el);
         return;
@@ -384,22 +356,35 @@ static void createMissingClients(client c) {
 }
 
 static void showLatencyReport(void) {
-    int j, seen = 0;
+    int i, j, seen = 0, numthreads, donerequests = 0;
     float perc, reqpersec;
+    int latency[MAX_LATENCY+1];
+    memset(latency, 0, sizeof(int) * (MAX_LATENCY+1));
+    
+    numthreads = config.numthreads;
+    for (i = 0; i <= MAX_LATENCY; i++) {
+        for(j = 0; j < numthreads; j++) {
+            latency[i] += config.threads[j].latency[i];
+        }
+    }
+    for (i = 0; i < numthreads; i++) {
+        donerequests += config.threads[i].donerequests;
+        printf("===%d\n", config.threads[i].donerequests);
+    }
 
-    reqpersec = (float)config.requests/((float)config.totlatency/1000);
+    reqpersec = (float)donerequests/((float)config.totlatency/1000);
     if (!config.quiet) {
         printf("====== %s ======\n", config.title);
-        printf("  %d requests completed in %.2f seconds\n", config.requests,
+        printf("  %d requests completed in %.2f seconds\n", donerequests,
             (float)config.totlatency/1000);
         printf("  %d parallel clients\n", config.numclients);
         printf("  %d bytes payload\n", config.datasize);
         printf("  keep alive: %d\n", config.keepalive);
         printf("\n");
         for (j = 0; j <= MAX_LATENCY; j++) {
-            if (config.latency[j]) {
-                seen += config.latency[j];
-                perc = ((float)seen*100)/config.requests;
+            if (latency[j]) {
+                seen += latency[j];
+                perc = ((float)seen*100)/donerequests;
                 printf("%.2f%% <= %d milliseconds\n", perc, j);
             }
         }
@@ -409,21 +394,6 @@ static void showLatencyReport(void) {
     }
 }
 
-static void prepareForBenchmark(char *title) {
-    memset(config.latency,0,sizeof(int)*(MAX_LATENCY+1));
-    config.title = title;
-    config.start = mstime();
-}
-
-static void endBenchmark(void) {
-    int i;
-    for (i = 0; i < config.numthreads; i++) {
-        pthread_join(config.threads[i].tid, NULL);
-    }
-    config.totlatency = mstime()-config.start;
-    showLatencyReport();
-    freeAllClients();
-}
 
 void parseOptions(int argc, char **argv) {
     int i;
@@ -449,6 +419,7 @@ void parseOptions(int argc, char **argv) {
                 printf("Can't resolve %s\n", argv[i]);
                 exit(1);
             }
+            free(config.hostip);
             config.hostip = ip;
             i++;
         } else if (!strcmp(argv[i],"-p") && !lastarg) {
@@ -500,12 +471,16 @@ void parseOptions(int argc, char **argv) {
 }
 
 int showThroughput(struct aeEventLoop *eventLoop, long long id, void *clientData) {
+    int i, donerequests = 0;
     MCB_NOTUSED(eventLoop);
     MCB_NOTUSED(id);
     MCB_NOTUSED(clientData);
 
     float dt = (float)(mstime()-config.start)/1000.0;
-    float rps = (float)config.donerequests/dt;
+    for (i = 0; i < config.numthreads; i++) {
+        donerequests += config.threads[i].donerequests;
+    }
+    float rps = (float)donerequests/dt;
     printf("%s: %.2f\r", config.title, rps);
     fflush(stdout);
     return 250; /* every 250ms */
@@ -519,6 +494,11 @@ void startConnection(void *args) {
     fprintf(stderr, "thread-%d started.\n", t_info->id);
     c = createClient(t_info->id);
     if (!c) exit(1);
+
+    // first thread show throughput
+    if (t_info->id == 0) {
+        aeCreateTimeEvent(t_info->el,1,showThroughput,NULL,NULL);
+    }
     c->obuf = sdscatprintf(c->obuf,"set foo_rand000000000000 0 0 %d\r\n",config.datasize);
     {
         char *data = zmalloc(config.datasize+2);
@@ -526,6 +506,7 @@ void startConnection(void *args) {
         data[config.datasize] = '\r';
         data[config.datasize+1] = '\n';
         c->obuf = sdscatlen(c->obuf,data,config.datasize+2);
+        zfree(data);
     }
     prepareClientForReply(c,REPLY_RETCODE);
     createMissingClients(c);
@@ -533,7 +514,27 @@ void startConnection(void *args) {
     fprintf(stderr, "thread-%d stoped.\n", t_info->id);
 }
 
-struct thread_info *spawnThreads(int numthreads, int numclients, int numrequests) {
+void freeThreads(int num, struct thread_info *threads) {
+    int i;
+    struct thread_info *t_info;
+
+    for (i = 0; i < num; i++) {
+        t_info = &threads[i];
+        zfree(t_info->latency);
+        listNode *ln = t_info->clients->head, *next;
+        while(ln) {
+            next = ln->next;
+            freeClient(ln->value);
+            ln = next;
+        }
+        listRelease(t_info->clients);
+        aeDelteAllTimeEvent(t_info->el);
+        aeDeleteEventLoop(t_info->el);
+    }
+    free(threads);
+}
+
+void spawnThreads(int numthreads, int numclients, int numrequests) {
     int i, rest, rc;
     struct thread_info *threads;
 
@@ -543,6 +544,9 @@ struct thread_info *spawnThreads(int numthreads, int numclients, int numrequests
 
     // init thread info
     threads = malloc(numthreads * sizeof(struct thread_info));
+    if (!threads) {
+        return;
+    }
     for (i = 0; i < numthreads; i++) {
         threads[i].id = i;
         threads[i].el = aeCreateEventLoop();
@@ -551,6 +555,7 @@ struct thread_info *spawnThreads(int numthreads, int numclients, int numrequests
         threads[i].numclients = numclients / numthreads;
         threads[i].numrequests = numrequests / numthreads;
         threads[i].clients = listCreate();
+        threads[i].latency = zcalloc(sizeof(int)*(MAX_LATENCY+1)); 
     }
     rest = numclients % numthreads;
     for (i = 0; i < rest; i++) {
@@ -560,6 +565,7 @@ struct thread_info *spawnThreads(int numthreads, int numclients, int numrequests
     for (i = 0; i < rest; i++) {
         threads[i].numrequests++;
     }
+    config.threads = threads;
 
     // start thread connection
     for (i = 0; i < numthreads; i++) {
@@ -567,11 +573,25 @@ struct thread_info *spawnThreads(int numthreads, int numclients, int numrequests
         if (rc < 0 ) {
             // TODO: create thread errors
             fprintf(stderr, "create thread error, %s\n", strerror(rc));
-            return NULL;
+            free(threads);
+            return;
         }
     }
+}
 
-    return threads;
+static void prepareForBenchmark(char *title) {
+    config.title = title;
+    config.start = mstime();
+}
+
+static void endBenchmark(void) {
+    int i;
+    for (i = 0; i < config.numthreads; i++) {
+        pthread_join(config.threads[i].tid, NULL);
+    }
+    config.totlatency = mstime()-config.start;
+    showLatencyReport();
+    freeThreads(config.numthreads, config.threads);
 }
 
 int main(int argc, char **argv) {
@@ -584,7 +604,6 @@ int main(int argc, char **argv) {
     config.numclients = 50;
     config.requests = 10000;
     // TODO: add show throughput later
-    //aeCreateTimeEvent(config.el,1,showThroughput,NULL,NULL);
     config.keepalive = 1;
     config.donerequests = 0;
     config.datasize = 3;
@@ -593,10 +612,8 @@ int main(int argc, char **argv) {
     config.quiet = 0;
     config.loop = 0;
     config.idlemode = 0;
-    config.latency = NULL;
-    config.latency = zmalloc(sizeof(int)*(MAX_LATENCY+1));
 
-    config.hostip = "127.0.0.1";
+    config.hostip = strdup("127.0.0.1");
     config.hostport = 11211;
 
     parseOptions(argc,argv);
@@ -621,12 +638,11 @@ int main(int argc, char **argv) {
 
     do {
         prepareForBenchmark("SET");
-        printf("===%d,%d,%d\n", config.numthreads, config.numclients, config.requests);
-        config.threads = spawnThreads(config.numthreads, config.numclients, config.requests);
+        spawnThreads(config.numthreads, config.numclients, config.requests);
         if (!config.threads) exit(1);
         endBenchmark();
         printf("\n");
     } while(config.loop);
-
+    zfree(config.hostip);
     return 0;
 }

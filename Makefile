@@ -6,10 +6,10 @@ CC=gcc
 uname_S := $(shell sh -c 'uname -s 2>/dev/null || echo not')
 #OPTIMIZATION?=-O2
 ifeq ($(uname_S),SunOS)
-  CFLAGS?=-pedantic $(OPTIMIZATION) -Wall -W -D__EXTENSIONS__ -D_XPG6
-  CCLINK?= -ldl -lnsl -lsocket -lm -lpthread
+  CFLAGS?= -std=c99 -pedantic $(OPTIMIZATION) -Wall -W -D__EXTENSIONS__ -D_XPG6
+  CCLINK?=-ldl -lnsl -lsocket -lm -lpthread
 else
-  CFLAGS?=-pedantic $(OPTIMIZATION) -Wall -W $(ARCH) $(PROF)
+  CFLAGS?= -std=c99 -pedantic $(OPTIMIZATION) -Wall -W $(ARCH) $(PROF)
   CCLINK?= -lm -lpthread
 endif
 CCOPT= $(CFLAGS) $(CCLINK) $(ARCH) $(PROF)

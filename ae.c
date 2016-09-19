@@ -208,6 +208,14 @@ static aeTimeEvent *aeSearchNearestTimer(aeEventLoop *eventLoop)
     return nearest;
 }
 
+void aeDelteAllTimeEvent(aeEventLoop *eventLoop) {
+    aeTimeEvent *te = aeSearchNearestTimer(eventLoop);
+    while(te) {
+        aeDeleteTimeEvent(eventLoop, te->id);
+        te = aeSearchNearestTimer(eventLoop);
+    }
+}
+
 /* Process time events */
 static int processTimeEvents(aeEventLoop *eventLoop) {
     int processed = 0;
