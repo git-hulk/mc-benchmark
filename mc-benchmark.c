@@ -68,6 +68,7 @@ struct thread_info {
     int numrequests;
     int donerequests;
     int *latency;
+    sds payload;
 };
 
 static struct config {
@@ -484,12 +485,11 @@ int showThroughput(struct aeEventLoop *eventLoop, long long id, void *clientData
     return 250; /* every 250ms */
 }
 
-void startConnection(void *args) {
+void run(void *args) {
     client c;
     struct thread_info *thread;
     
     thread = (struct thread_info *) args;
-    fprintf(stderr, "thread-%d started.\n", thread->id);
     c = createClient(thread);
     if (!c) exit(1);
 
@@ -497,6 +497,10 @@ void startConnection(void *args) {
     if (thread->id == 0) {
         aeCreateTimeEvent(thread->el,1,showThroughput,NULL,NULL);
     }
+    if (thread->payload) {
+        c->obuf = sdscatlen(c->obuf, thread->payload, sdslen(thread->payload));
+    }
+    /*
     c->obuf = sdscatprintf(c->obuf,"set foo_rand000000000000 0 0 %d\r\n",config.datasize);
     {
         char *data = zmalloc(config.datasize+2);
@@ -506,6 +510,7 @@ void startConnection(void *args) {
         c->obuf = sdscatlen(c->obuf,data,config.datasize+2);
         zfree(data);
     }
+    */
     prepareClientForReply(c,REPLY_RETCODE);
     createMissingClients(c);
     aeMain(thread->el);
@@ -532,7 +537,7 @@ void freeThreads(int num, struct thread_info *threads) {
     free(threads);
 }
 
-void spawnThreads(int numthreads, int numclients, int numrequests) {
+void spawnThreads(int numthreads, int numclients, int numrequests, sds payload) {
     int i, rest, rc;
     struct thread_info *threads;
 
@@ -553,6 +558,10 @@ void spawnThreads(int numthreads, int numclients, int numrequests) {
         threads[i].numrequests = numrequests / numthreads;
         threads[i].clients = listCreate();
         threads[i].latency = zcalloc(sizeof(int)*(MAX_LATENCY+1)); 
+        threads[i].payload = NULL;
+        if (sdslen(payload)) {
+            threads[i].payload = sdsdup(payload);
+        }
     }
     rest = numclients % numthreads;
     for (i = 0; i < rest; i++) {
@@ -566,7 +575,7 @@ void spawnThreads(int numthreads, int numclients, int numrequests) {
 
     // start thread connection
     for (i = 0; i < numthreads; i++) {
-        rc = pthread_create(&threads[i].tid, NULL, (void*(*)(void*))startConnection, &threads[i]);
+        rc = pthread_create(&threads[i].tid, NULL, (void*(*)(void*))run, &threads[i]);
         if (rc < 0 ) {
             // TODO: create thread errors
             fprintf(stderr, "create thread error, %s\n", strerror(rc));
@@ -614,15 +623,45 @@ int main(int argc, char **argv) {
     config.hostport = 11211;
 
     parseOptions(argc,argv);
+    if (config.requests > config.numclients) {
+        config.numclients = config.requests;
+    }
+    if (config.numthreads > config.numthreads) {
+        config.numthreads = config.numthreads;
+    }
 
     if (config.keepalive == 0) {
         printf("WARNING: keepalive disabled, you probably need 'echo 1 > /proc/sys/net/ipv4/tcp_tw_reuse' for Linux and 'sudo sysctl -w net.inet.tcp.msl=1000' for Mac OS X in order to use a lot of clients/requests\n");
     }
     do {
+        sds payload;
+
+        /* SET benchmark*/
         prepareForBenchmark("SET");
-        spawnThreads(config.numthreads, config.numclients, config.requests);
+        payload = sdsempty();
+        payload = sdscatprintf(payload,"set foo_rand000000000000 0 0 %d\r\n",config.datasize);
+        {
+            char *data = zmalloc(config.datasize+2);
+            memset(data,'x',config.datasize);
+            data[config.datasize] = '\r';
+            data[config.datasize+1] = '\n';
+            payload = sdscatlen(payload,data,config.datasize+2);
+            zfree(data);
+        }
+        spawnThreads(config.numthreads, config.numclients, config.requests, payload);
         if (!config.threads) exit(1);
+        sdsfree(payload);
         endBenchmark();
+
+        /* GET benchmark*/
+        prepareForBenchmark("GET");
+        payload = sdsempty();
+        payload = sdscat(payload,"get foo_rand000000000000\r\n");
+        spawnThreads(config.numthreads, config.numclients, config.requests, payload);
+        if (!config.threads) exit(1);
+        sdsfree(payload);
+        endBenchmark();
+
         printf("\n");
     } while(config.loop);
     zfree(config.hostip);
