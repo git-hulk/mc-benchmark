@@ -83,7 +83,6 @@ static struct config {
     int hostport;
     int keepalive;
     long long start;
-    long long totlatency;
     char *title;
     int quiet;
     int loop;
@@ -108,7 +107,7 @@ typedef struct _client {
 
 /* Prototypes */
 static void writeHandler(aeEventLoop *el, int fd, void *privdata, int mask);
-static void createMissingClients(struct thread_info *thread, client c);
+static void createMissingClients(client c);
 
 /* Implementation */
 static long long mstime(void) {
@@ -153,7 +152,7 @@ static void resetClient(client c) {
     c->totreceived = 0;
     c->state = CLIENT_SENDQUERY;
     c->start = mstime();
-    createMissingClients(thread, c);
+    createMissingClients(c);
 }
 
 static void randomizeClientKey(client c) {
@@ -198,7 +197,7 @@ static void clientDone(client c) {
         if (config.randomkeys) randomizeClientKey(c);
     } else {
         thread->liveclients--;
-        createMissingClients(thread, c);
+        createMissingClients(c);
         thread->liveclients++;
         freeClient(c);
     }
@@ -342,7 +341,8 @@ static client createClient(struct thread_info *thread) {
     return c;
 }
 
-static void createMissingClients(struct thread_info *thread, client c) {
+static void createMissingClients(client c) {
+    struct thread_info *thread = c->owner;
     while(thread->liveclients < thread->numclients) {
         client new = createClient(thread);
         if (!new) continue;
@@ -356,9 +356,10 @@ static void createMissingClients(struct thread_info *thread, client c) {
 static void showLatencyReport(void) {
     int i, j, seen = 0, numthreads, donerequests = 0;
     float perc, reqpersec;
-    int latency[MAX_LATENCY+1];
+    int latency[MAX_LATENCY+1], totlatency;
     memset(latency, 0, sizeof(int) * (MAX_LATENCY+1));
     
+    totlatency = mstime()-config.start;
     numthreads = config.numthreads;
     for (i = 0; i <= MAX_LATENCY; i++) {
         for(j = 0; j < numthreads; j++) {
@@ -369,11 +370,11 @@ static void showLatencyReport(void) {
         donerequests += config.threads[i].donerequests;
     }
 
-    reqpersec = (float)donerequests/((float)config.totlatency/1000);
+    reqpersec = (float)donerequests/((float)totlatency/1000);
     if (!config.quiet) {
         printf("====== %s ======\n", config.title);
         printf("  %d requests completed in %.2f seconds\n", donerequests,
-            (float)config.totlatency/1000);
+            (float)totlatency/1000);
         printf("  %d parallel clients\n", config.numclients);
         printf("  %d bytes payload\n", config.datasize);
         printf("  keep alive: %d\n", config.keepalive);
@@ -506,7 +507,7 @@ void startConnection(void *args) {
         zfree(data);
     }
     prepareClientForReply(c,REPLY_RETCODE);
-    createMissingClients(thread, c);
+    createMissingClients(c);
     aeMain(thread->el);
     fprintf(stderr, "thread-%d stoped.\n", thread->id);
 }
@@ -537,7 +538,6 @@ void spawnThreads(int numthreads, int numclients, int numrequests) {
 
     if (numthreads <= 0) numthreads = 4;
     if (numthreads > 64) numthreads = 64;
-    config.numthreads = numthreads;
 
     // init thread info
     threads = malloc(numthreads * sizeof(struct thread_info));
@@ -574,6 +574,8 @@ void spawnThreads(int numthreads, int numclients, int numrequests) {
             return;
         }
     }
+    config.threads = threads;
+    config.numthreads = numthreads;
 }
 
 static void prepareForBenchmark(char *title) {
@@ -583,10 +585,10 @@ static void prepareForBenchmark(char *title) {
 
 static void endBenchmark(void) {
     int i;
+
     for (i = 0; i < config.numthreads; i++) {
         pthread_join(config.threads[i].tid, NULL);
     }
-    config.totlatency = mstime()-config.start;
     showLatencyReport();
     freeThreads(config.numthreads, config.threads);
 }
@@ -608,7 +610,6 @@ int main(int argc, char **argv) {
     config.quiet = 0;
     config.loop = 0;
     config.idlemode = 0;
-
     config.hostip = strdup("127.0.0.1");
     config.hostport = 11211;
 
@@ -617,21 +618,6 @@ int main(int argc, char **argv) {
     if (config.keepalive == 0) {
         printf("WARNING: keepalive disabled, you probably need 'echo 1 > /proc/sys/net/ipv4/tcp_tw_reuse' for Linux and 'sudo sysctl -w net.inet.tcp.msl=1000' for Mac OS X in order to use a lot of clients/requests\n");
     }
-
-#if 0
-    if (config.idlemode) {
-        printf("Creating %d idle connections and waiting forever (Ctrl+C when done)\n", config.numclients);
-        prepareForBenchmark("IDLE");
-        c = createClient();
-        if (!c) exit(1);
-        c->obuf = sdsempty();
-        prepareClientForReply(c,REPLY_RETCODE); /* will never receive it */
-        createMissingClients(c);
-        aeMain(config.el);
-        /* and will wait for every */
-    }
-#endif
-
     do {
         prepareForBenchmark("SET");
         spawnThreads(config.numthreads, config.numclients, config.requests);
