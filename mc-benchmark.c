@@ -124,28 +124,28 @@ static long long mstime(void) {
 
 static void freeClient(client c) {
     listNode *ln;
-    struct thread_info *t_info;
+    struct thread_info *thread;
 
-    t_info = &config.threads[c->owner];
-    aeDeleteFileEvent(t_info->el,c->fd,AE_WRITABLE);
-    aeDeleteFileEvent(t_info->el,c->fd,AE_READABLE);
+    thread = &config.threads[c->owner];
+    aeDeleteFileEvent(thread->el,c->fd,AE_WRITABLE);
+    aeDeleteFileEvent(thread->el,c->fd,AE_READABLE);
     sdsfree(c->ibuf);
     sdsfree(c->obuf);
     close(c->fd);
     zfree(c);
-    t_info->liveclients--;
-    ln = listSearchKey(t_info->clients,c);
+    thread->liveclients--;
+    ln = listSearchKey(thread->clients,c);
     assert(ln != NULL);
-    listDelNode(t_info->clients,ln);
+    listDelNode(thread->clients,ln);
 }
 
 static void resetClient(client c) {
-    struct thread_info *t_info;
+    struct thread_info *thread;
 
-    t_info = &config.threads[c->owner];
-    aeDeleteFileEvent(t_info->el,c->fd,AE_WRITABLE);
-    aeDeleteFileEvent(t_info->el,c->fd,AE_READABLE);
-    aeCreateFileEvent(t_info->el,c->fd, AE_WRITABLE,writeHandler,c);
+    thread = &config.threads[c->owner];
+    aeDeleteFileEvent(thread->el,c->fd,AE_WRITABLE);
+    aeDeleteFileEvent(thread->el,c->fd,AE_READABLE);
+    aeCreateFileEvent(thread->el,c->fd, AE_WRITABLE,writeHandler,c);
     sdsfree(c->ibuf);
     c->ibuf = sdsempty();
     c->readlen = (c->replytype == REPLY_BULK) ? -1 : 0;
@@ -182,26 +182,26 @@ static void prepareClientForReply(client c, int type) {
 
 static void clientDone(client c) {
     long long latency;
-    struct thread_info *t_info;
+    struct thread_info *thread;
 
-    t_info = &config.threads[c->owner];
+    thread = &config.threads[c->owner];
 
-    t_info->donerequests ++;
+    thread->donerequests ++;
     latency = mstime() - c->start;
     if (latency > MAX_LATENCY) latency = MAX_LATENCY;
-    t_info->latency[latency]++ ;
-    if (t_info->donerequests >= t_info->numrequests) {
+    thread->latency[latency]++ ;
+    if (thread->donerequests >= thread->numrequests) {
         freeClient(c);
-        aeStop(t_info->el);
+        aeStop(thread->el);
         return;
     }
     if (config.keepalive) {
         resetClient(c);
         if (config.randomkeys) randomizeClientKey(c);
     } else {
-        t_info->liveclients--;
+        thread->liveclients--;
         createMissingClients(c);
-        t_info->liveclients++;
+        thread->liveclients++;
         freeClient(c);
     }
 }
@@ -487,16 +487,16 @@ int showThroughput(struct aeEventLoop *eventLoop, long long id, void *clientData
 
 void startConnection(void *args) {
     client c;
-    struct thread_info *t_info;
+    struct thread_info *thread;
     
-    t_info = (struct thread_info *) args;
-    fprintf(stderr, "thread-%d started.\n", t_info->id);
-    c = createClient(t_info->id);
+    thread = (struct thread_info *) args;
+    fprintf(stderr, "thread-%d started.\n", thread->id);
+    c = createClient(thread->id);
     if (!c) exit(1);
 
     // first thread show throughput
-    if (t_info->id == 0) {
-        aeCreateTimeEvent(t_info->el,1,showThroughput,NULL,NULL);
+    if (thread->id == 0) {
+        aeCreateTimeEvent(thread->el,1,showThroughput,NULL,NULL);
     }
     c->obuf = sdscatprintf(c->obuf,"set foo_rand000000000000 0 0 %d\r\n",config.datasize);
     {
@@ -509,26 +509,26 @@ void startConnection(void *args) {
     }
     prepareClientForReply(c,REPLY_RETCODE);
     createMissingClients(c);
-    aeMain(t_info->el);
-    fprintf(stderr, "thread-%d stoped.\n", t_info->id);
+    aeMain(thread->el);
+    fprintf(stderr, "thread-%d stoped.\n", thread->id);
 }
 
 void freeThreads(int num, struct thread_info *threads) {
     int i;
-    struct thread_info *t_info;
+    struct thread_info *thread;
 
     for (i = 0; i < num; i++) {
-        t_info = &threads[i];
-        zfree(t_info->latency);
-        listNode *ln = t_info->clients->head, *next;
+        thread = &threads[i];
+        zfree(thread->latency);
+        listNode *ln = thread->clients->head, *next;
         while(ln) {
             next = ln->next;
             freeClient(ln->value);
             ln = next;
         }
-        listRelease(t_info->clients);
-        aeDelteAllTimeEvent(t_info->el);
-        aeDeleteEventLoop(t_info->el);
+        listRelease(thread->clients);
+        aeDelteAllTimeEvent(thread->el);
+        aeDeleteEventLoop(thread->el);
     }
     free(threads);
 }
