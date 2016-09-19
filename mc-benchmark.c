@@ -369,7 +369,6 @@ static void showLatencyReport(void) {
     }
     for (i = 0; i < numthreads; i++) {
         donerequests += config.threads[i].donerequests;
-        printf("===%d\n", config.threads[i].donerequests);
     }
 
     reqpersec = (float)donerequests/((float)config.totlatency/1000);
