@@ -75,7 +75,6 @@ static struct config {
     int numthreads;
     int numclients;
     int requests;
-    int donerequests;
     int keysize;
     int datasize;
     int randomkeys;
@@ -604,7 +603,6 @@ int main(int argc, char **argv) {
     config.requests = 10000;
     // TODO: add show throughput later
     config.keepalive = 1;
-    config.donerequests = 0;
     config.datasize = 3;
     config.randomkeys = 0;
     config.randomkeys_keyspacelen = 0;
