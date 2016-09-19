@@ -134,19 +134,19 @@ static long long mstime(void) {
 
 static void freeClient(client c) {
     listNode *ln;
-    struct thread_info t_info;
+    struct thread_info *t_info;
 
-    t_info = config.threads[c->owner];
-    aeDeleteFileEvent(t_info.el,c->fd,AE_WRITABLE);
-    aeDeleteFileEvent(t_info.el,c->fd,AE_READABLE);
+    t_info = &config.threads[c->owner];
+    aeDeleteFileEvent(t_info->el,c->fd,AE_WRITABLE);
+    aeDeleteFileEvent(t_info->el,c->fd,AE_READABLE);
     sdsfree(c->ibuf);
     sdsfree(c->obuf);
     close(c->fd);
     zfree(c);
-    t_info.liveclients--;
-    ln = listSearchKey(t_info.clients,c);
+    t_info->liveclients--;
+    ln = listSearchKey(t_info->clients,c);
     assert(ln != NULL);
-    listDelNode(t_info.clients,ln);
+    listDelNode(t_info->clients,ln);
 }
 
 static void freeAllClients(void) {
@@ -163,12 +163,12 @@ static void freeAllClients(void) {
 }
 
 static void resetClient(client c) {
-    struct thread_info t_info;
+    struct thread_info *t_info;
 
-    t_info = config.threads[c->owner];
-    aeDeleteFileEvent(t_info.el,c->fd,AE_WRITABLE);
-    aeDeleteFileEvent(t_info.el,c->fd,AE_READABLE);
-    aeCreateFileEvent(t_info.el,c->fd, AE_WRITABLE,writeHandler,c);
+    t_info = &config.threads[c->owner];
+    aeDeleteFileEvent(t_info->el,c->fd,AE_WRITABLE);
+    aeDeleteFileEvent(t_info->el,c->fd,AE_READABLE);
+    aeCreateFileEvent(t_info->el,c->fd, AE_WRITABLE,writeHandler,c);
     sdsfree(c->ibuf);
     c->ibuf = sdsempty();
     c->readlen = (c->replytype == REPLY_BULK) ? -1 : 0;
@@ -206,11 +206,11 @@ static void prepareClientForReply(client c, int type) {
 static void clientDone(client c) {
     long long latency;
     static int last_tot_received = 1;
-    struct thread_info t_info;
+    struct thread_info *t_info;
 
-    t_info = config.threads[c->owner];
+    t_info = &config.threads[c->owner];
 
-    t_info.donerequests ++;
+    t_info->donerequests ++;
     latency = mstime() - c->start;
     if (latency > MAX_LATENCY) latency = MAX_LATENCY;
     config.latency[latency] = atomic_inc(&config.latency[latency], 1);
@@ -218,18 +218,18 @@ static void clientDone(client c) {
         printf("Tot bytes received: %d\n", c->totreceived);
         last_tot_received = c->totreceived;
     }
-    if (t_info.donerequests == t_info.numrequests) {
+    if (t_info->donerequests == t_info->numrequests) {
         freeClient(c);
-        aeStop(t_info.el);
+        aeStop(t_info->el);
         return;
     }
     if (config.keepalive) {
         resetClient(c);
         if (config.randomkeys) randomizeClientKey(c);
     } else {
-        t_info.liveclients--;
+        t_info->liveclients--;
         createMissingClients(c);
-        t_info.liveclients++;
+        t_info->liveclients++;
         freeClient(c);
     }
 }
@@ -539,9 +539,9 @@ struct thread_info *spawnThreads(int numthreads, int numclients, int numrequests
 
     if (numthreads <= 0) numthreads = 4;
     if (numthreads > 64) numthreads = 64;
+    config.numthreads = numthreads;
 
     // init thread info
-    config.numthreads = numthreads;
     threads = malloc(numthreads * sizeof(struct thread_info));
     for (i = 0; i < numthreads; i++) {
         threads[i].id = i;
