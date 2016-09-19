@@ -93,7 +93,7 @@ static struct config {
 
 
 typedef struct _client {
-    int owner;
+    struct thread_info *owner; /* Client own to which thread */
     int state;
     int fd;
     sds obuf;
@@ -108,7 +108,7 @@ typedef struct _client {
 
 /* Prototypes */
 static void writeHandler(aeEventLoop *el, int fd, void *privdata, int mask);
-static void createMissingClients(client c);
+static void createMissingClients(struct thread_info *thread, client c);
 
 /* Implementation */
 static long long mstime(void) {
@@ -125,7 +125,7 @@ static void freeClient(client c) {
     listNode *ln;
     struct thread_info *thread;
 
-    thread = &config.threads[c->owner];
+    thread = c->owner;
     aeDeleteFileEvent(thread->el,c->fd,AE_WRITABLE);
     aeDeleteFileEvent(thread->el,c->fd,AE_READABLE);
     sdsfree(c->ibuf);
@@ -141,7 +141,7 @@ static void freeClient(client c) {
 static void resetClient(client c) {
     struct thread_info *thread;
 
-    thread = &config.threads[c->owner];
+    thread = c->owner;
     aeDeleteFileEvent(thread->el,c->fd,AE_WRITABLE);
     aeDeleteFileEvent(thread->el,c->fd,AE_READABLE);
     aeCreateFileEvent(thread->el,c->fd, AE_WRITABLE,writeHandler,c);
@@ -153,7 +153,7 @@ static void resetClient(client c) {
     c->totreceived = 0;
     c->state = CLIENT_SENDQUERY;
     c->start = mstime();
-    createMissingClients(c);
+    createMissingClients(thread, c);
 }
 
 static void randomizeClientKey(client c) {
@@ -183,8 +183,7 @@ static void clientDone(client c) {
     long long latency;
     struct thread_info *thread;
 
-    thread = &config.threads[c->owner];
-
+    thread = c->owner;
     thread->donerequests ++;
     latency = mstime() - c->start;
     if (latency > MAX_LATENCY) latency = MAX_LATENCY;
@@ -199,7 +198,7 @@ static void clientDone(client c) {
         if (config.randomkeys) randomizeClientKey(c);
     } else {
         thread->liveclients--;
-        createMissingClients(c);
+        createMissingClients(thread, c);
         thread->liveclients++;
         freeClient(c);
     }
@@ -311,18 +310,18 @@ static void writeHandler(aeEventLoop *el, int fd, void *privdata, int mask)
         }
         c->written += nwritten;
         if (sdslen(c->obuf) == c->written) {
-            aeDeleteFileEvent(config.threads[c->owner].el,c->fd,AE_WRITABLE);
-            aeCreateFileEvent(config.threads[c->owner].el,c->fd,AE_READABLE,readHandler,c);
+            aeDeleteFileEvent(c->owner->el,c->fd,AE_WRITABLE);
+            aeCreateFileEvent(c->owner->el,c->fd,AE_READABLE,readHandler,c);
             c->state = CLIENT_READREPLY;
         }
     }
 }
 
-static client createClient(int id) {
+static client createClient(struct thread_info *thread) {
     client c = zmalloc(sizeof(struct _client));
     char err[ANET_ERR_LEN];
 
-    c->owner = id;
+    c->owner = thread;
     c->fd = anetTcpNonBlockConnect(err,config.hostip,config.hostport);
     if (c->fd == ANET_ERR) {
         zfree(c);
@@ -337,15 +336,15 @@ static client createClient(int id) {
     c->written = 0;
     c->totreceived = 0;
     c->state = CLIENT_CONNECTING;
-    aeCreateFileEvent(config.threads[id].el, c->fd, AE_WRITABLE, writeHandler, c);
-    config.threads[id].liveclients++;
-    listAddNodeTail(config.threads[id].clients,c);
+    aeCreateFileEvent(thread->el, c->fd, AE_WRITABLE, writeHandler, c);
+    thread->liveclients++;
+    listAddNodeTail(thread->clients,c);
     return c;
 }
 
-static void createMissingClients(client c) {
-    while(config.threads[c->owner].liveclients < config.threads[c->owner].numclients) {
-        client new = createClient(c->owner);
+static void createMissingClients(struct thread_info *thread, client c) {
+    while(thread->liveclients < thread->numclients) {
+        client new = createClient(thread);
         if (!new) continue;
         sdsfree(new->obuf);
         new->obuf = sdsdup(c->obuf);
@@ -490,7 +489,7 @@ void startConnection(void *args) {
     
     thread = (struct thread_info *) args;
     fprintf(stderr, "thread-%d started.\n", thread->id);
-    c = createClient(thread->id);
+    c = createClient(thread);
     if (!c) exit(1);
 
     // first thread show throughput
@@ -507,7 +506,7 @@ void startConnection(void *args) {
         zfree(data);
     }
     prepareClientForReply(c,REPLY_RETCODE);
-    createMissingClients(c);
+    createMissingClients(thread, c);
     aeMain(thread->el);
     fprintf(stderr, "thread-%d stoped.\n", thread->id);
 }
