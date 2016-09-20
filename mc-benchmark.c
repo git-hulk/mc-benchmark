@@ -500,17 +500,6 @@ void run(void *args) {
     if (thread->payload) {
         c->obuf = sdscatlen(c->obuf, thread->payload, sdslen(thread->payload));
     }
-    /*
-    c->obuf = sdscatprintf(c->obuf,"set foo_rand000000000000 0 0 %d\r\n",config.datasize);
-    {
-        char *data = zmalloc(config.datasize+2);
-        memset(data,'x',config.datasize);
-        data[config.datasize] = '\r';
-        data[config.datasize+1] = '\n';
-        c->obuf = sdscatlen(c->obuf,data,config.datasize+2);
-        zfree(data);
-    }
-    */
     prepareClientForReply(c,REPLY_RETCODE);
     createMissingClients(c);
     aeMain(thread->el);
@@ -623,11 +612,11 @@ int main(int argc, char **argv) {
     config.hostport = 11211;
 
     parseOptions(argc,argv);
-    if (config.requests > config.numclients) {
+    if (config.requests < config.numclients) {
         config.numclients = config.requests;
     }
-    if (config.numthreads > config.numthreads) {
-        config.numthreads = config.numthreads;
+    if (config.numclients < config.numthreads) {
+        config.numthreads = config.numclients;
     }
 
     if (config.keepalive == 0) {
@@ -652,6 +641,7 @@ int main(int argc, char **argv) {
         if (!config.threads) exit(1);
         sdsfree(payload);
         endBenchmark();
+
 
         /* GET benchmark*/
         prepareForBenchmark("GET");
