@@ -74,6 +74,7 @@ struct thread_info {
 static struct config {
     int debug;
     int numthreads;
+    int redis;
     int numclients;
     int requests;
     int keysize;
@@ -406,6 +407,9 @@ void parseOptions(int argc, char **argv) {
         } else if (!strcmp(argv[i],"-t") && !lastarg) {
             config.numthreads = atoi(argv[i+1]);
             i++;
+        } else if (!strcmp(argv[i],"-R") && !lastarg) {
+            config.redis = atoi(argv[i+1]);
+            i++;
         } else if (!strcmp(argv[i],"-n") && !lastarg) {
             config.requests = atoi(argv[i+1]);
             i++;
@@ -445,7 +449,7 @@ void parseOptions(int argc, char **argv) {
             config.idlemode = 1;
         } else {
             printf("Wrong option '%s' or option argument missing\n\n",argv[i]);
-            printf("Usage: mc-benchmark [-h <host>] [-p <port>] [-c <clients>] [-n <requests]> [-k <boolean>]\n\n");
+            printf("Usage: mc-benchmark [-h <host>] [-p <port>] [-c <clients>] [-n <requests]> [-k <boolean>] [-R <boolean>]\n\n");
             printf(" -h <hostname>      Server hostname (default 127.0.0.1)\n");
             printf(" -p <hostname>      Server port (default 6379)\n");
             printf(" -c <clients>       Number of parallel connections (default 50)\n");
@@ -453,6 +457,7 @@ void parseOptions(int argc, char **argv) {
             printf(" -n <requests>      Total number of requests (default 10000)\n");
             printf(" -d <size>          Data size of SET/GET value in bytes (default 2)\n");
             printf(" -k <boolean>       1=keep alive 0=reconnect (default 1)\n");
+            printf(" -R <boolean>       1=redis protocol 0= protocol(default 0)\n");
             printf(" -r <keyspacelen>   Use random keys for SET/GET/INCR, random values for SADD\n");
             printf("  Using this option the benchmark will get/set keys\n");
             printf("  in the form mykey_rand000000012456 instead of constant\n");
@@ -503,7 +508,6 @@ void run(void *args) {
     prepareClientForReply(c,REPLY_RETCODE);
     createMissingClients(c);
     aeMain(thread->el);
-    fprintf(stderr, "thread-%d stoped.\n", thread->id);
 }
 
 void freeThreads(int num, struct thread_info *threads) {
@@ -610,6 +614,7 @@ int main(int argc, char **argv) {
     config.idlemode = 0;
     config.hostip = strdup("127.0.0.1");
     config.hostport = 11211;
+    config.redis = 0;
 
     parseOptions(argc,argv);
     if (config.requests < config.numclients) {
@@ -628,8 +633,10 @@ int main(int argc, char **argv) {
         /* SET benchmark*/
         prepareForBenchmark("SET");
         payload = sdsempty();
-        payload = sdscatprintf(payload,"set foo_rand000000000000 0 0 %d\r\n",config.datasize);
-        {
+        if (config.redis) {
+            payload = sdscatprintf(payload,"*3\r\n$3\r\nset\r\n$20\r\nfoo_rand000000000000\r\n$2\r\nab\r\n");
+        } else {
+            payload = sdscatprintf(payload,"set foo_rand000000000000 0 0 %d\r\n",config.datasize);
             char *data = zmalloc(config.datasize+2);
             memset(data,'x',config.datasize);
             data[config.datasize] = '\r';
@@ -646,7 +653,11 @@ int main(int argc, char **argv) {
         /* GET benchmark*/
         prepareForBenchmark("GET");
         payload = sdsempty();
-        payload = sdscat(payload,"get foo_rand000000000000\r\n");
+        if (config.redis) {
+            payload = sdscat(payload,"*2\r\n$3\r\nget\r\n$20\r\nfoo_rand000000000000\r\n");
+        } else {
+            payload = sdscat(payload,"get foo_rand000000000000\r\n");
+        }
         spawnThreads(config.numthreads, config.numclients, config.requests, payload);
         if (!config.threads) exit(1);
         sdsfree(payload);
