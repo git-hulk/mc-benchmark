@@ -627,6 +627,14 @@ int main(int argc, char **argv) {
     if (config.keepalive == 0) {
         printf("WARNING: keepalive disabled, you probably need 'echo 1 > /proc/sys/net/ipv4/tcp_tw_reuse' for Linux and 'sudo sysctl -w net.inet.tcp.msl=1000' for Mac OS X in order to use a lot of clients/requests\n");
     }
+
+    int i = config.datasize, counter=19;
+    // payload data
+    char *data = zmalloc(config.datasize+2);
+    memset(data,'x',config.datasize);
+    data[config.datasize] = '\r';
+    data[config.datasize+1] = '\n';
+    while ((i /=10) > 0) counter++;
     do {
         sds payload;
 
@@ -634,27 +642,21 @@ int main(int argc, char **argv) {
         prepareForBenchmark("SET");
         payload = sdsempty();
         if (config.redis) {
-            payload = sdscatprintf(payload,"*3\r\n$3\r\nset\r\n$20\r\nfoo_rand000000000000\r\n$2\r\nab\r\n");
+            payload = sdscatprintf(payload,"*3\r\n$3\r\nset\r\n$%d\r\nk%d_rand000000000000\r\n$%d\r\n", counter, config.datasize, config.datasize);
         } else {
             payload = sdscatprintf(payload,"set foo_rand000000000000 0 0 %d\r\n",config.datasize);
-            char *data = zmalloc(config.datasize+2);
-            memset(data,'x',config.datasize);
-            data[config.datasize] = '\r';
-            data[config.datasize+1] = '\n';
-            payload = sdscatlen(payload,data,config.datasize+2);
-            zfree(data);
         }
+        payload = sdscatlen(payload,data,config.datasize+2);
         spawnThreads(config.numthreads, config.numclients, config.requests, payload);
         if (!config.threads) exit(1);
         sdsfree(payload);
         endBenchmark();
 
-
         /* GET benchmark*/
         prepareForBenchmark("GET");
         payload = sdsempty();
         if (config.redis) {
-            payload = sdscat(payload,"*2\r\n$3\r\nget\r\n$20\r\nfoo_rand000000000000\r\n");
+            payload = sdscatprintf(payload,"*2\r\n$3\r\nget\r\n$%d\r\nk%d_rand000000000000\r\n", counter, config.datasize);
         } else {
             payload = sdscat(payload,"get foo_rand000000000000\r\n");
         }
@@ -665,6 +667,7 @@ int main(int argc, char **argv) {
 
         printf("\n");
     } while(config.loop);
+    zfree(data);
     zfree(config.hostip);
     return 0;
 }
